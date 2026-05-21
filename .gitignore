@@ -1,3 +1,9 @@
+# folder
+build/
+out/
+.vs/
+bin/
+
 # Prerequisites
 *.d
 
