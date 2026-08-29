@@ -1,0 +1,82 @@
+#version 450 core
+
+layout(local_size_x = 64) in;
+
+struct MeshletInfo {
+    uint indexOffset;
+    uint indexCount;
+    int  vertexOffset;
+    uint pad; // Padding for 16-byte alignment if needed
+};
+
+struct MeshletBounds {
+    vec4 centerAndRadius; // xyz = center, w = radius
+};
+
+struct DrawElementsIndirectCommand {
+    uint count;
+    uint instanceCount;
+    uint firstIndex;
+    int  baseVertex;
+    uint baseInstance;
+};
+
+// Input buffers
+layout(std430, binding = 0) readonly buffer MeshletInfoBlock {
+    MeshletInfo meshlets[];
+};
+
+layout(std430, binding = 1) readonly buffer MeshletBoundsBlock {
+    MeshletBounds bounds[];
+};
+
+// Output buffers
+layout(std430, binding = 2) writeonly buffer CommandBlock {
+    DrawElementsIndirectCommand commands[];
+};
+
+// Global atomic counter
+layout(std430, binding = 3) buffer CounterBlock {
+    uint drawCount;
+};
+
+// Uniforms
+layout(location = 0) uniform uint totalMeshlets;
+layout(location = 1) uniform uint cullingEnabled; // 0 = false, 1 = true
+layout(location = 2) uniform vec4 frustumPlanes[6];
+
+bool isVisible(vec3 center, float radius) {
+    for (int i = 0; i < 6; ++i) {
+        if (dot(frustumPlanes[i].xyz, center) + frustumPlanes[i].w < -radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    uint gId = gl_GlobalInvocationID.x;
+    if (gId >= totalMeshlets) return;
+
+    MeshletInfo meshlet = meshlets[gId];
+    MeshletBounds b = bounds[gId];
+    vec3 center = b.centerAndRadius.xyz;
+    float radius = b.centerAndRadius.w;
+
+    bool visible = true;
+    if (cullingEnabled != 0) {
+        visible = isVisible(center, radius);
+    }
+
+    if (visible) {
+        // Increment atomic counter and get write index
+        uint drawIndex = atomicAdd(drawCount, 1);
+
+        // Populate indirect draw command
+        commands[drawIndex].count = meshlet.indexCount;
+        commands[drawIndex].instanceCount = 1;
+        commands[drawIndex].firstIndex = meshlet.indexOffset; // Reverted back to elements offset
+        commands[drawIndex].baseVertex = meshlet.vertexOffset;
+        commands[drawIndex].baseInstance = gId; // Pass persistent meshlet ID via baseInstance
+    }
+}
